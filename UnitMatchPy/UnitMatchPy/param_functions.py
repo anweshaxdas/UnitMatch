@@ -89,22 +89,27 @@ def get_max_sites(waveform, channel_pos, clus_info, param):
 
     # Finds the indices where the distance from the max site mean is small
     good_idx = np.empty((n_units, n_channels))
-    for i in range(channel_pos[0].shape[0]): #looping over each site, assuming all channel_pos, are the same no of channels
-        for j in range(n_units):
-            dist = np.linalg.norm(channel_pos[session_id[j]][max_site_mean[j],:] - channel_pos[session_id[j]][i,:])
+    good_idx[:] = 0
+    for j in range(n_units):
+        n_chans = channel_pos[session_id[j]].shape[0]
+        max_site_idx = min(int(max_site_mean[j]), n_chans - 1)
+        for i in range(n_chans):  # loop over THIS session's channels, not session 0's
+            dist = np.linalg.norm(channel_pos[session_id[j]][max_site_idx, :] - channel_pos[session_id[j]][i, :])
             good = dist < channel_radius
-            good_idx[j,i] = good
+            good_idx[j, i] = good
 
     good_pos = np.zeros((n_units, n_channels, 3))
     for i in range(n_units):
-        #gives the 3-d positions of the channels if they are close to the max site
-        good_pos[i] = channel_pos[session_id[i]] * np.tile(good_idx[i], (3,1)).T
+        n_chans_i = channel_pos[session_id[i]].shape[0]
+        good_pos[i, :n_chans_i, :] = channel_pos[session_id[i]] * np.tile(good_idx[i, :n_chans_i], (3, 1)).T
 
     # waveform_filt, is the waveform, only at 'good' spatial points and a waveidx/good time points
     waveform_filt = np.zeros_like(waveform)
     mask = np.zeros_like(waveform)
     for i in range(n_units):
-        mask[i, waveidx[0]:waveidx[-1], good_idx[i,:].astype(bool),:] = 1 
+        n_chans_i = channel_pos[session_id[i]].shape[0]
+        good_chans = np.where(good_idx[i, :n_chans_i].astype(bool))[0]
+        mask[i, waveidx[0]:waveidx[-1], good_chans, :] = 1
 
     waveform_filt = mask * waveform #applying the filter, so only allow good time points/spatial points
 
@@ -187,10 +192,14 @@ def decay_and_average_waveform(waveform, channel_pos, good_idx, max_site, max_si
 
     for i in range(n_units):
         #use the good indices calculated, to get the nearby positions of each unit
-        good_pos = channel_pos[session_id[i]][good_idx[i,:].astype(bool),:]
+        n_chans_i = channel_pos[session_id[i]].shape[0]
+        good_chans_i = np.where(good_idx[i, :n_chans_i].astype(bool))[0]
+        good_pos = channel_pos[session_id[i]][good_chans_i, :]
         for cv in range(2):
-            dist_to_max_chan = np.linalg.norm( good_pos - channel_pos[session_id[i]][max_site[i,cv]], axis= 1 )
-            tmp_amp = abs(waveform[i, new_peak_loc, good_idx[i,:].astype(bool), cv])
+            n_chans_i = channel_pos[session_id[i]].shape[0]
+            max_site_cv_idx = min(int(max_site[i, cv]), n_chans_i - 1)
+            dist_to_max_chan = np.linalg.norm(good_pos - channel_pos[session_id[i]][max_site_cv_idx], axis=1)
+            tmp_amp = abs(waveform[i, new_peak_loc, good_chans_i, cv])
 
             # need to remove 0 values, as divide by Dist2MaxChan, and need TmpAmp to be same size
             tmp_amp = tmp_amp[dist_to_max_chan != 0]
@@ -219,22 +228,26 @@ def decay_and_average_waveform(waveform, channel_pos, good_idx, max_site, max_si
             d_10[i,cv] = tmp_min # distance to where the amplitude decay to 10% of its peak
 
             # Find channel sites which are within d_10 of the max site for that unit and cv
-            tmp_idx = np.empty(n_channels)
-            for s in range(n_channels): #looping over each site
+            n_chans_i = channel_pos[session_id[i]].shape[0]
+            tmp_idx = np.zeros(n_channels)  # initialize to 0 (no good channels beyond actual size)
+            for s in range(n_chans_i):  # only loop over actual channels
 
 ########################################################################################################
                 #can change to use max site of each cv, or max site of the mean of each cv
                 #dist = np.linalg.norm(ChannelPos[SessionID[i]][MaxSite[i],:] - ChannelPos[SessionID[i]][s,:])
-                dist = np.linalg.norm(channel_pos[session_id[i]][max_site_mean[i],:] - channel_pos[session_id[i]][s,:])
+                n_chans_i = channel_pos[session_id[i]].shape[0]
+                max_site_idx_i = min(int(max_site_mean[i]), n_chans_i - 1)
+                dist = np.linalg.norm(channel_pos[session_id[i]][max_site_idx_i, :] - channel_pos[session_id[i]][s, :])
 ########################################################################################################
 
                 good = dist < d_10[i,cv]
                 tmp_idx[s] = good
 
-            loc = channel_pos[session_id[i]][tmp_idx.astype(bool),:]
+            tmp_chans = np.where(tmp_idx[:n_chans_i].astype(bool))[0]
+            loc = channel_pos[session_id[i]][tmp_chans, :]
 
             #average centroid is the sum of spatial footprint * position / spatial foot print
-            spatial_fp = np.max(np.abs(waveform[i,:,tmp_idx.astype(bool),cv]), axis = 1)
+            spatial_fp = np.max(np.abs(waveform[i, :, tmp_chans, cv]), axis=1)
             spatial_fp = np.expand_dims(spatial_fp, axis = -1)
             mu = np.sum( np.tile(spatial_fp[:], (1,3)) * loc, axis = 0) / np.sum(spatial_fp[:])
 
@@ -243,7 +256,7 @@ def decay_and_average_waveform(waveform, channel_pos, good_idx, max_site, max_si
             #Weighted average waveform
             dist_to_max_proj = np.linalg.norm(loc - avg_centroid[:,i,cv].T, axis = 1) #it is transposed here
             weight = (d_10[i,cv] - dist_to_max_proj) / d_10[i,cv]
-            avg_waveform[:,i,cv] = np.nansum( waveform[i,:,tmp_idx.astype(bool),cv].T * np.tile(weight, (spike_width, 1)), axis = 1 ) / np.sum(weight)
+            avg_waveform[:,i,cv] = np.nansum(waveform[i, :, tmp_chans, cv].T * np.tile(weight, (spike_width, 1)), axis=1) / np.sum(weight)
             
             #significant time points 
             wave_duration_tmp = np.argwhere( np.abs(avg_waveform[:,i,cv]) - np.mean(avg_waveform[0:20,i,cv]) > 2.5 * np.std(avg_waveform[0:20,i,cv], axis = 0))
@@ -369,7 +382,7 @@ def get_avg_waveform_per_tp(waveform, channel_pos, d_10, max_site_mean, amplitud
     waveidx = param['waveidx']
     session_id = clus_info['session_id']
 
-    good_site_id = np.empty((n_units,n_channels,2))
+    good_site_id = np.zeros((n_units, n_channels, 2))
     waveform_duration = np.full((n_units,2), np.nan)
     avg_waveform_per_tp = np.full((3, n_units,spike_width,2), np.nan)
     good_wave_idxs = np.zeros((n_units, spike_width, 2))
@@ -377,11 +390,14 @@ def get_avg_waveform_per_tp(waveform, channel_pos, d_10, max_site_mean, amplitud
     for i in range(n_units):   
         for cv in range(2):
             #dist = np.linalg.norm(ChannelPos[SessionID[i]][MaxSite[i,cv],:] - ChannelPos[SessionID[i]][:,:], axis = 1)
-            dist = np.linalg.norm(channel_pos[session_id[i]][max_site_mean[i],:] - channel_pos[session_id[i]][:,:], axis = 1)
+            n_chans_i = channel_pos[session_id[i]].shape[0]
+            max_site_idx_i = min(int(max_site_mean[i]), n_chans_i - 1)
+            dist = np.linalg.norm(channel_pos[session_id[i]][max_site_idx_i, :] - channel_pos[session_id[i]][:, :], axis=1)
 
             test = dist < np.abs(d_10[i,cv])
-            good_site_id[i,:,cv] = test
-            loc = channel_pos[session_id[i]][good_site_id[i,:,cv].astype(bool), :]
+            good_site_id[i, :n_chans_i, cv] = test  # ← bounds-safe
+            good_site_chans = np.where(good_site_id[i, :n_chans_i, cv].astype(bool))[0]
+            loc = channel_pos[session_id[i]][good_site_chans, :]
 
             # select time points where the values are above 25% of the amplitude
             wave_duration_tmp = np.argwhere( np.abs(np.sign(amplitude[i,cv]) * avg_waveform[waveidx,i,cv] )> (np.sign(amplitude[i,cv]) * amplitude[i,cv] * 0.25))
@@ -400,7 +416,7 @@ def get_avg_waveform_per_tp(waveform, channel_pos, d_10, max_site_mean, amplitud
             
         #Projected location per time point 
             for idx in wave_duration_tmp:
-                tmp = np.abs(waveform[i,idx,good_site_id[i,:,cv].astype(bool),cv])
+                tmp = np.abs(waveform[i, idx, good_site_chans, cv])
                 tmp = np.expand_dims(tmp, axis = 1)
                 tmp = np.tile(tmp, (1,3))
                 tmp = np.sum(tmp * loc , axis = 0) / np.sum(tmp, axis = 0)

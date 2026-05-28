@@ -71,112 +71,125 @@ def get_max_site(SpatialFP):
 
 def sort_good_channels(goodChannelMap, goodpos):
     '''
-    Sorts the good channels by their y-axis value and then by their z-axis value.
+    Sorts the good channels by their x-axis value and then by their y-axis value.
+    Handles any number of unique x values (1, 2, 3, or 4 columns).
     '''
-    # Step 1: Identify the unique y-axis values and sort them
-    unique_y_values = np.unique(goodpos[:, 0])
-    unique_y_values.sort()
+    unique_x_values = np.unique(goodpos[:, 0])
+    unique_x_values.sort()
+    n_cols = len(unique_x_values)
 
-    # Safety check: ensure there are exactly two unique y-axis values
-    if len(unique_y_values) != 2:
-        print(unique_y_values)
-        print(f"Found {len(unique_y_values)} instead of 2 unique x values.")
-        # TODO: adapt this code to be robust to Neuropixels 1.0 recordings as well as 2.0.
-        # For now we are only using Neuropixels 2.0 data -> if we enter this block it means there was a mistake in spike sorting
-        # Therefore the fix for now is to use return 0s so that we can handle this in extract_Rwaveforms
+    if n_cols == 0:
+        return [-1], [-1]
 
-        # print(f"Channel Map: {goodChannelMap}")
-        # print(f"Pos: {goodpos}")
-        # raise ValueError(f"There should be exactly two unique y-axis values for Neuropixels 2.0 shank - instead got {len(unique_y_values)}: [{unique_y_values}]")
-        return [-1],[-1]
+    # Group channels by x column, sorted by y (depth) within each group
+    groups_map = []
+    groups_pos = []
+    for x_val in unique_x_values:
+        idx = np.where(goodpos[:, 0] == x_val)[0]
+        y_sort = np.argsort(goodpos[idx, 1])
+        groups_map.append(goodChannelMap[idx][y_sort])
+        groups_pos.append(goodpos[idx][y_sort])
 
-    channels_y_min_indices = np.where(goodpos[:, 0] == unique_y_values[0])[0]
-    channels_y_max_indices = np.where(goodpos[:, 0] == unique_y_values[1])[0]
+    # Interleave row-by-row across columns
+    sorted_goodChannelMap = []
+    sorted_goodpos = []
+    max_rows = max(len(g) for g in groups_map)
+    for row in range(max_rows):
+        for col in range(n_cols):
+            if row < len(groups_map[col]):
+                sorted_goodChannelMap.append(groups_map[col][row])
+                sorted_goodpos.append(groups_pos[col][row])
 
-    channels_y_min = goodChannelMap[channels_y_min_indices]
-    channels_y_max = goodChannelMap[channels_y_max_indices]
+    return np.array(sorted_goodChannelMap), np.array(sorted_goodpos)
 
-    pos_y_min = goodpos[channels_y_min_indices]
-    pos_y_max = goodpos[channels_y_max_indices]
-    
-    # Step 3: Sort each group by the z-axis value
-    z_min_sorted_indices = np.argsort(goodpos[goodpos[:, 0] == unique_y_values[0], 1])
-    z_max_sorted_indices = np.argsort(goodpos[goodpos[:, 0] == unique_y_values[1], 1])
 
-    channels_y_min_sorted = channels_y_min[z_min_sorted_indices]
-    channels_y_max_sorted = channels_y_max[z_max_sorted_indices]
-
-    pos_y_min_sorted = pos_y_min[z_min_sorted_indices]
-    pos_y_max_sorted = pos_y_max[z_max_sorted_indices]
-
-    # Step 4: Interleave the channels from the two groups
-    sorted_goodChannelMap = np.empty_like(goodChannelMap)
-    sorted_goodChannelMap[::2] = channels_y_min_sorted[:len(sorted_goodChannelMap)//2]  # Even indices
-    sorted_goodChannelMap[1::2] = channels_y_max_sorted[:len(sorted_goodChannelMap)//2]  # Odd indices
-    sorted_goodpos = np.empty_like(goodpos)
-    sorted_goodpos[::2, :] = pos_y_min_sorted
-    sorted_goodpos[1::2, :] = pos_y_max_sorted
-    return sorted_goodChannelMap, sorted_goodpos
-
-def extract_Rwaveforms(waveform, ChannelPos,ChannelMap, param):
+def extract_Rwaveforms(waveform, ChannelPos, ChannelMap, param):
     """
     Using waveforms, ChannelPos and param, to find the max channel for each unit and cv, this function also
-    returns good idx's / positions, by selecting channels within ChannelRadius (default 150 um) 
+    returns good idx's / positions, by selecting channels within ChannelRadius (default 150 um)
+
     Input: waveform (nTime, nChannels, CV), ChannelPos (nChannels, 2), param (dictionary)
     """
 
-    nChannels = param['nChannels']
     nTime = param['nTime']
     RnChannels = param['RnChannels']
     RnTime = param['RnTime']
     ChannelRadius = param['ChannelRadius']
+
+    # Use actual channel count from ChannelPos, not hardcoded param value
+    n_actual_channels = ChannelPos.shape[0]
+
+    # Trim ChannelMap to match ChannelPos size if needed
+    if len(ChannelMap) > n_actual_channels:
+        ChannelMap = ChannelMap[:n_actual_channels]
+
     # original time 0-82, new time 11-71
-    start_time,end_time = (nTime - RnTime) // 2, (nTime + RnTime) // 2
-    if waveform.ndim==2:
+    start_time, end_time = (nTime - RnTime) // 2, (nTime + RnTime) // 2
+    if waveform.ndim == 2:
         waveform = np.stack([waveform, waveform], axis=2)
-    waveform = waveform[start_time:end_time,:,:] # selecting the middle 60 time points (11-71)
-    waveform = detrend_waveform(waveform) # detrend the waveform
-    MeanCV = np.mean(waveform, axis = 2) # average of each cv
-    SpatialFootprint = get_spatialfp(MeanCV) # choose max time 
-    MaxSiteMean = get_max_site(SpatialFootprint) # argument of MaxSite
-    MaxSitepos = ChannelPos[MaxSiteMean,:] #gives the 2-d positions of the max sites
+    waveform = waveform[start_time:end_time, :, :]  # selecting the middle 60 time points (11-71)
+    waveform = detrend_waveform(waveform)  # detrend the waveform
+    MeanCV = np.mean(waveform, axis=2)  # average of each cv
+    SpatialFootprint = get_spatialfp(MeanCV)  # choose max time
+
+    MaxSiteMean = get_max_site(SpatialFootprint)  # argument of MaxSite
+
+    # Remap MaxSiteMean from hardware channel index to local ChannelPos index
+    # (needed when ChannelMap doesn't cover all hardware channels)
+    if MaxSiteMean >= n_actual_channels:
+        local_max = np.where(ChannelMap == ChannelMap[min(MaxSiteMean, len(ChannelMap)-1)])[0]
+        if len(local_max) > 0:
+            MaxSiteMean_local = int(local_max[0])
+        else:
+            MaxSiteMean_local = MaxSiteMean % n_actual_channels
+    else:
+        MaxSiteMean_local = MaxSiteMean
+
+    MaxSitepos = ChannelPos[MaxSiteMean_local, :]  # gives the 2-d positions of the max sites
 
     # Finds the indices where the distance from the max site mean is small
-    goodidx = np.empty(nChannels, dtype=bool)
-    for i in range(ChannelPos.shape[0]): #looping over each site
-        dist = np.linalg.norm(ChannelPos[MaxSiteMean,:] - ChannelPos[i,:])
-        good = dist < ChannelRadius
-        goodidx[i] = good
+    goodidx = np.empty(n_actual_channels, dtype=bool)
+    for i in range(n_actual_channels):
+        dist = np.linalg.norm(ChannelPos[MaxSiteMean_local, :] - ChannelPos[i, :])
+        goodidx[i] = dist < ChannelRadius
 
-    goodChannelMap = ChannelMap[goodidx] #selecting the good channels
-    goodpos = ChannelPos * np.tile(goodidx, (2,1)).T
-    goodpos = goodpos[goodidx,:]
-    sorted_goodChannelMap,sorted_goodpos = sort_good_channels(goodChannelMap, goodpos)
-    if sorted_goodChannelMap[0]==-1 and sorted_goodpos[0]==-1:
+    goodChannelMap = ChannelMap[goodidx]  # selecting the good channels
+    goodpos = ChannelPos * np.tile(goodidx, (2, 1)).T
+    goodpos = goodpos[goodidx, :]
+    sorted_goodChannelMap, sorted_goodpos = sort_good_channels(goodChannelMap, goodpos)
+    if sorted_goodChannelMap[0] == -1 and sorted_goodpos[0] == -1:
         # we have a spike sorting error so need to 0 this recording
-        return np.array([-1,-1]), np.array([-1,-1]), [0], [0], np.zeros((1,1,1))
-    Rwaveform = waveform[:, sorted_goodChannelMap, :] #selecting the good channels
-    
+        return np.array([-1, -1]), np.array([-1, -1]), [0], [0], np.zeros((1, 1, 1))
+    Rwaveform = waveform[:, sorted_goodChannelMap, :]  # selecting the good channels
+
     ## this part is tricks to make the data proper for DNN training
-    GlobalMean = np.mean(Rwaveform) # mean of all channels and time points
-    Rwaveform = Rwaveform - GlobalMean # subtracting the global mean, zero mean is good for DNN
+    GlobalMean = np.mean(Rwaveform)  # mean of all channels and time points
+    Rwaveform = Rwaveform - GlobalMean  # subtracting the global mean, zero mean is good for DNN
     # padding the data to make it proper for DNN
     NewGlobalMean = np.mean(Rwaveform)
-    z_sorted_goodpos = np.unique(sorted_goodpos[:,1])
+    z_sorted_goodpos = np.unique(sorted_goodpos[:, 1])
     mean_z_sorted_goodpos = np.mean(z_sorted_goodpos)
     z_MaxSitepos = MaxSitepos[1]
     num_good_channels = np.sum(goodidx)
-    # print('num_good_channels',num_good_channels)
     padding_needed = RnChannels - num_good_channels
     pad_before = 0
     pad_after = 0
-    if z_MaxSitepos < mean_z_sorted_goodpos:
-        pad_before = padding_needed  # Pad at the beginning if MaxSitepos is below the mean z position
-    else:
-        pad_after = padding_needed  # Pad at the end if MaxSitepos is above the mean z position
-    Rwaveform = np.pad(Rwaveform, ((0, 0), (pad_before, pad_after), (0, 0)), 'constant', constant_values=(NewGlobalMean, NewGlobalMean))
-    
+    if padding_needed > 0:  # pad if too few channels
+        if z_MaxSitepos < mean_z_sorted_goodpos:
+            pad_before = padding_needed
+        else:
+            pad_after = padding_needed
+    elif padding_needed < 0:  # trim if too many channels
+        excess = -padding_needed
+        if z_MaxSitepos < mean_z_sorted_goodpos:
+            Rwaveform = Rwaveform[:, excess:, :]
+        else:
+            Rwaveform = Rwaveform[:, :RnChannels, :]
+    Rwaveform = np.pad(Rwaveform, ((0, 0), (pad_before, pad_after), (0, 0)), 'constant',
+                       constant_values=(NewGlobalMean, NewGlobalMean))
+
     return MaxSiteMean, MaxSitepos, sorted_goodChannelMap, sorted_goodpos, Rwaveform
+
 
 def save_waveforms_hdf5(file_name, Rwaveform, MaxSitepos, session, save_path=None):
     """
