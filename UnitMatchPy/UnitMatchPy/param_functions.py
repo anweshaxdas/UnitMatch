@@ -205,6 +205,14 @@ def decay_and_average_waveform(waveform, channel_pos, good_idx, max_site, max_si
             tmp_amp = tmp_amp[dist_to_max_chan != 0]
             dist_to_max_chan = dist_to_max_chan[dist_to_max_chan != 0]
 
+            # Guard: if no channels remain (e.g. no channels within radius for this unit),
+            # skip curve fitting and use safe defaults. Occurs on some NP1.0 sessions.
+            if len(tmp_amp) == 0:
+                spatial_decay_fit[i, cv] = 0
+                spatial_decay[i, cv] = 0
+                d_10[i, cv] = channel_radius
+                continue
+
             # there is variation in how different programming languages/options fit to a curve
             popt, pcurve = sp.optimize.curve_fit(
                 exponential_func,
